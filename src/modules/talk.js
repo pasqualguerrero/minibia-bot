@@ -18,6 +18,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     lastSentAt: 0,
     selfSenderNames: [],
     seenMessageKeys: [],
+    seenMessageSignatures: [],
   };
 
   const config = Object.assign(
@@ -90,6 +91,27 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     }
   }
 
+  function trimSeenSignatures() {
+    const maxSeenSignatures = 200;
+    if (state.seenMessageSignatures.length > maxSeenSignatures) {
+      state.seenMessageSignatures = state.seenMessageSignatures.slice(-maxSeenSignatures);
+    }
+  }
+
+  function getMessageSignature(message) {
+    if (!message) {
+      return "";
+    }
+
+    const timestamp = getMessageTimestamp(message);
+    return [
+      normalizeName(message.channelName),
+      normalizeName(message.sender),
+      normalizeName(message.body || message.rawMessage),
+      timestamp || "",
+    ].join("|");
+  }
+
   function rememberSeenKey(key) {
     if (!key || state.seenMessageKeys.includes(key)) {
       return;
@@ -99,12 +121,30 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     trimSeenKeys();
   }
 
+  function rememberSeenSignature(signature) {
+    if (!signature || state.seenMessageSignatures.includes(signature)) {
+      return;
+    }
+
+    state.seenMessageSignatures.push(signature);
+    trimSeenSignatures();
+  }
+
+  function rememberSeenMessage(message) {
+    rememberSeenKey(message?.key);
+    rememberSeenSignature(getMessageSignature(message));
+  }
+
   function hasSeenKey(key) {
     return !!key && state.seenMessageKeys.includes(key);
   }
 
+  function hasSeenSignature(signature) {
+    return !!signature && state.seenMessageSignatures.includes(signature);
+  }
+
   function rememberSeenMessages(messages) {
-    messages.forEach((message) => rememberSeenKey(message?.key));
+    messages.forEach((message) => rememberSeenMessage(message));
   }
 
   function rememberSelfSenderName(name) {
@@ -264,7 +304,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
 
       if (isBotRecentMessage(message) || isLikelyBotEcho(message)) {
         rememberSelfSenderName(message.sender);
-        rememberSeenKey(message.key);
+        rememberSeenMessage(message);
       }
     });
   }
@@ -343,41 +383,41 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     }
 
     if (message.channelName !== "Default") {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
-    if (hasSeenKey(message.key)) {
+    if (hasSeenKey(message.key) || hasSeenSignature(getMessageSignature(message))) {
       return false;
     }
 
     if (isSelfMessage(message)) {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
     if (isBotRecentMessage(message)) {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
     if (isLikelyBotEcho(message)) {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
     if (isTrustedMessage(message)) {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
     if (!message.sender) {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
     if (looksLikeSpellCast(message.body) || looksLikeFoodMessage(message.body)) {
-      rememberSeenKey(message.key);
+      rememberSeenMessage(message);
       return false;
     }
 
@@ -404,7 +444,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     }
 
     if (isSelfMessage(targetMessage)) {
-      rememberSeenKey(targetMessage.key);
+      rememberSeenMessage(targetMessage);
       return { targetMessage: null, pendingMessages: [] };
     }
 
@@ -607,7 +647,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
 
   function seedSeenMessages() {
     rememberSelfSenderName(bot.getPlayerName?.());
-    getChatMessages().forEach((message) => rememberSeenKey(message.key));
+    getChatMessages().forEach((message) => rememberSeenMessage(message));
   }
 
   function start(overrides = {}) {
