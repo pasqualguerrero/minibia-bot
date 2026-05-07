@@ -131,6 +131,11 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
     state.lastTriggerAt = Date.now();
     bot.playAlarm?.();
     bot.log("panic triggered", { reason, ...details });
+
+    if (bot.cave?.stop) {
+      bot.cave.stop();
+    }
+
     return !!bot.pz?.goToHomePz?.();
   }
 
@@ -146,6 +151,10 @@ window.__minibiaBotBundle.installPanicModule = function installPanicModule(bot) 
 
     if (bot.eat?.stop) {
       bot.eat.stop();
+    }
+
+    if (bot.cave?.stop) {
+      bot.cave.stop();
     }
 
     config.unknownPlayerEnabled = false;
