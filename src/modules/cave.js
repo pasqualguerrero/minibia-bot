@@ -983,7 +983,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -991,8 +992,10 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       state.timerId = null;
     }
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("cave bot stopped");
     return true;
   }

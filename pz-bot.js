@@ -274,27 +274,27 @@ window.__minibiaBotBundle.createBot = function createBot() {
       }
 
       if (this.rune?.stop) {
-        this.rune.stop();
+        this.rune.stop({ persistEnabled: false });
       }
 
       if (this.heal?.stop) {
-        this.heal.stop();
+        this.heal.stop({ persistEnabled: false });
       }
 
       if (this.cave?.stop) {
-        this.cave.stop();
+        this.cave.stop({ persistEnabled: false });
       }
 
       if (this.equipRing?.stop) {
-        this.equipRing.stop();
+        this.equipRing.stop({ persistEnabled: false });
       }
 
       if (this.eat?.stop) {
-        this.eat.stop();
+        this.eat.stop({ persistEnabled: false });
       }
 
       if (this.talk?.stop) {
-        this.talk.stop();
+        this.talk.stop({ persistEnabled: false });
       }
 
       if (this.ui?.destroy) {
@@ -1577,7 +1577,8 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -1587,8 +1588,10 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
 
     detachResumeListeners();
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("rune maker stopped");
     return true;
   }
@@ -1779,7 +1782,8 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -1787,8 +1791,10 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
       state.timerId = null;
     }
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("auto heal stopped");
     return true;
   }
@@ -2830,7 +2836,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -2838,8 +2845,10 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       state.timerId = null;
     }
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("cave bot stopped");
     return true;
   }
@@ -3225,7 +3234,8 @@ window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModu
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -3235,8 +3245,10 @@ window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModu
 
     detachResumeListeners();
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("equip ring stopped");
     return true;
   }
@@ -3622,7 +3634,8 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -3633,8 +3646,10 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     clearPendingContainerUse();
     detachResumeListeners();
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("auto eat stopped");
     return true;
   }
@@ -4152,10 +4167,14 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
-    config.enabled = false;
-    persistConfig();
+
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
 
     if (state.timerId != null) {
       window.clearTimeout(state.timerId);
@@ -5510,11 +5529,57 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 };
 (() => {
   const bundle = window.__minibiaBotBundle || window.__minibiaBotReloadBundle || {};
+  const persistedEnabledModules = [
+    ["rune", "minibiaBot.rune.config"],
+    ["heal", "minibiaBot.heal.config"],
+    ["cave", "minibiaBot.cave.config"],
+    ["equipRing", "minibiaBot.equipRing.config"],
+    ["eat", "minibiaBot.eat.config"],
+    ["talk", "minibiaBot.talk.config"],
+  ];
+
+  function getPersistedEnabledSnapshot(bot) {
+    const snapshot = {};
+    const status = typeof bot?.status === "function" ? bot.status() : null;
+
+    persistedEnabledModules.forEach(([moduleName]) => {
+      const enabled = status?.[moduleName]?.config?.enabled;
+      if (typeof enabled === "boolean") {
+        snapshot[moduleName] = enabled;
+      }
+    });
+
+    return snapshot;
+  }
+
+  function restorePersistedEnabledSnapshot(snapshot) {
+    persistedEnabledModules.forEach(([moduleName, storageKey]) => {
+      if (typeof snapshot?.[moduleName] !== "boolean") {
+        return;
+      }
+
+      try {
+        const rawValue = window.localStorage.getItem(storageKey);
+        const config = rawValue ? JSON.parse(rawValue) : {};
+        config.enabled = snapshot[moduleName];
+        window.localStorage.setItem(storageKey, JSON.stringify(config));
+      } catch (error) {
+        console.error("[minibia-bot] failed to restore persisted enabled state", {
+          module: moduleName,
+          error,
+        });
+      }
+    });
+  }
 
   function boot(currentBundle = bundle) {
+    const previousEnabledSnapshot = getPersistedEnabledSnapshot(window.minibiaBot);
+
     if (window.minibiaBot?.destroy) {
       window.minibiaBot.destroy();
     }
+
+    restorePersistedEnabledSnapshot(previousEnabledSnapshot);
 
     const bot = currentBundle.createBot();
 

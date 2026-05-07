@@ -343,7 +343,8 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -354,8 +355,10 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     clearPendingContainerUse();
     detachResumeListeners();
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("auto eat stopped");
     return true;
   }

@@ -147,7 +147,8 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -155,8 +156,10 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
       state.timerId = null;
     }
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("auto heal stopped");
     return true;
   }

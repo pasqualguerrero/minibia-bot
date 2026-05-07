@@ -464,10 +464,14 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
-    config.enabled = false;
-    persistConfig();
+
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
 
     if (state.timerId != null) {
       window.clearTimeout(state.timerId);

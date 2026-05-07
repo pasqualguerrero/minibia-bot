@@ -274,27 +274,27 @@ window.__minibiaBotBundle.createBot = function createBot() {
       }
 
       if (this.rune?.stop) {
-        this.rune.stop();
+        this.rune.stop({ persistEnabled: false });
       }
 
       if (this.heal?.stop) {
-        this.heal.stop();
+        this.heal.stop({ persistEnabled: false });
       }
 
       if (this.cave?.stop) {
-        this.cave.stop();
+        this.cave.stop({ persistEnabled: false });
       }
 
       if (this.equipRing?.stop) {
-        this.equipRing.stop();
+        this.equipRing.stop({ persistEnabled: false });
       }
 
       if (this.eat?.stop) {
-        this.eat.stop();
+        this.eat.stop({ persistEnabled: false });
       }
 
       if (this.talk?.stop) {
-        this.talk.stop();
+        this.talk.stop({ persistEnabled: false });
       }
 
       if (this.ui?.destroy) {

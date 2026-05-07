@@ -239,7 +239,8 @@ window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModu
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -249,8 +250,10 @@ window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModu
 
     detachResumeListeners();
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("equip ring stopped");
     return true;
   }

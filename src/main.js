@@ -1,10 +1,56 @@
 (() => {
   const bundle = window.__minibiaBotBundle || window.__minibiaBotReloadBundle || {};
+  const persistedEnabledModules = [
+    ["rune", "minibiaBot.rune.config"],
+    ["heal", "minibiaBot.heal.config"],
+    ["cave", "minibiaBot.cave.config"],
+    ["equipRing", "minibiaBot.equipRing.config"],
+    ["eat", "minibiaBot.eat.config"],
+    ["talk", "minibiaBot.talk.config"],
+  ];
+
+  function getPersistedEnabledSnapshot(bot) {
+    const snapshot = {};
+    const status = typeof bot?.status === "function" ? bot.status() : null;
+
+    persistedEnabledModules.forEach(([moduleName]) => {
+      const enabled = status?.[moduleName]?.config?.enabled;
+      if (typeof enabled === "boolean") {
+        snapshot[moduleName] = enabled;
+      }
+    });
+
+    return snapshot;
+  }
+
+  function restorePersistedEnabledSnapshot(snapshot) {
+    persistedEnabledModules.forEach(([moduleName, storageKey]) => {
+      if (typeof snapshot?.[moduleName] !== "boolean") {
+        return;
+      }
+
+      try {
+        const rawValue = window.localStorage.getItem(storageKey);
+        const config = rawValue ? JSON.parse(rawValue) : {};
+        config.enabled = snapshot[moduleName];
+        window.localStorage.setItem(storageKey, JSON.stringify(config));
+      } catch (error) {
+        console.error("[minibia-bot] failed to restore persisted enabled state", {
+          module: moduleName,
+          error,
+        });
+      }
+    });
+  }
 
   function boot(currentBundle = bundle) {
+    const previousEnabledSnapshot = getPersistedEnabledSnapshot(window.minibiaBot);
+
     if (window.minibiaBot?.destroy) {
       window.minibiaBot.destroy();
     }
+
+    restorePersistedEnabledSnapshot(previousEnabledSnapshot);
 
     const bot = currentBundle.createBot();
 

@@ -184,7 +184,8 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     return true;
   }
 
-  function stop() {
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
     state.running = false;
 
     if (state.timerId != null) {
@@ -194,8 +195,10 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
 
     detachResumeListeners();
 
-    config.enabled = false;
-    persistConfig();
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
     bot.log("rune maker stopped");
     return true;
   }
