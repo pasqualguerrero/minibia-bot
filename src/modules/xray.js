@@ -74,6 +74,26 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     });
   }
 
+  function getVisibleMonsters(options = {}) {
+    const { sameFloorOnly = false } = options;
+    const me = bot.getPlayerPosition();
+    if (!me) {
+      return [];
+    }
+
+    return getVisibleCreatures().filter((creature) => {
+      if (creature?.type === 0) {
+        return false;
+      }
+
+      if (!sameFloorOnly) {
+        return true;
+      }
+
+      return creature.__position?.z === me.z;
+    });
+  }
+
   function readCreatureHealth(creature) {
     if (!creature) {
       return null;
@@ -295,6 +315,18 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
         name: player.name,
         position: player.__position || null,
       })),
+      visibleMonsters: getVisibleMonsters().map((creature) => ({
+        id: creature.id,
+        name: creature.name,
+        type: creature.type,
+        position: creature.__position || null,
+      })),
+      visibleMonstersCurrentFloor: getVisibleMonsters({ sameFloorOnly: true }).map((creature) => ({
+        id: creature.id,
+        name: creature.name,
+        type: creature.type,
+        position: creature.__position || null,
+      })),
       overlayCreatures: getOverlayCreatures().map((creature) => ({
         id: creature.id,
         name: creature.name,
@@ -309,6 +341,7 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
   bot.xray = {
     getVisibleCreatures,
     getVisiblePlayers,
+    getVisibleMonsters,
     getOverlayCreatures,
     startOverlay,
     stopOverlay,

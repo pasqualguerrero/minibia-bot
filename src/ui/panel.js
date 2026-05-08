@@ -162,6 +162,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoHealToggle.checked = !!bot.heal?.status?.().running;
   }
 
+  function refreshAutoAttackStatus() {
+    const autoAttackToggle = document.getElementById("minibia-bot-auto-attack-enabled");
+    if (!autoAttackToggle) return;
+
+    autoAttackToggle.checked = !!bot.attack?.status?.().running;
+  }
+
   function refreshCaveStatus() {
     const statusLabel = document.getElementById("minibia-bot-cave-status");
     const startButton = document.getElementById("minibia-bot-cave-start");
@@ -799,7 +806,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
           <div class="mb-section mb-column-section">
-            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
+            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, auto attack, and talk.</div>
           </div>
         </div>
         <div class="mb-side-column">
@@ -860,10 +867,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-clear">Clear</button>
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-clear-transitions">Clear Learned Transitions</button>
-              </div>
-              <div class="mb-actions">
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-refresh-closest">Refresh Closest</button>
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
               <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
@@ -873,6 +876,24 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-status">Status: no waypoints</div>
               <div class="mb-small-note">Record Spot saves only route tiles. Floor changes are learned automatically from observed z-changes near floor-change tiles.</div>
+            </div>
+          </div>
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Auto Attack</div>
+            <div class="mb-stack">
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-auto-attack-enabled" />
+                <span>Enable Auto Attack</span>
+              </label>
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-auto-attack-melee" />
+                <span>Melee Mode</span>
+              </label>
+              <label class="mb-field" for="minibia-bot-auto-attack-hotkey">
+                <span class="mb-field-label">Attack Hotkey (1-12)</span>
+                <input type="number" id="minibia-bot-auto-attack-hotkey" min="1" max="12" placeholder="3" />
+              </label>
+              <div class="mb-small-note">Melee mode acquires a target once, then walks adjacent to that target until it dies or disappears. Non-melee mode keeps re-pressing while monsters are nearby.</div>
             </div>
           </div>
         </div>
@@ -906,6 +927,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
     const autoHealMinManaInput = panel.querySelector("#minibia-bot-auto-heal-min-mana");
     const autoHealManaHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-mana-hotkey");
+    const autoAttackEnabledInput = panel.querySelector("#minibia-bot-auto-attack-enabled");
+    const autoAttackMeleeInput = panel.querySelector("#minibia-bot-auto-attack-melee");
+    const autoAttackHotkeyInput = panel.querySelector("#minibia-bot-auto-attack-hotkey");
     const talkEnabledInput = panel.querySelector("#minibia-bot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-bot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-bot-talk-prompt");
@@ -921,8 +945,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const caveRecordButton = panel.querySelector("#minibia-bot-cave-record");
     const caveRemoveLastButton = panel.querySelector("#minibia-bot-cave-remove-last");
     const caveClearButton = panel.querySelector("#minibia-bot-cave-clear");
-    const caveClearTransitionsButton = panel.querySelector("#minibia-bot-cave-clear-transitions");
-    const caveRefreshClosestButton = panel.querySelector("#minibia-bot-cave-refresh-closest");
     const caveStartButton = panel.querySelector("#minibia-bot-cave-start");
     const caveStopButton = panel.querySelector("#minibia-bot-cave-stop");
 
@@ -1093,19 +1115,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    if (caveClearTransitionsButton) {
-      caveClearTransitionsButton.addEventListener("click", () => {
-        bot.cave.clearTransitions();
-        refreshCaveTransitionStatus();
-      });
-    }
-
-    if (caveRefreshClosestButton) {
-      caveRefreshClosestButton.addEventListener("click", () => {
-        refreshCaveClosestStatus();
-      });
-    }
-
     if (caveStartButton) {
       caveStartButton.addEventListener("click", () => {
         bot.cave.start();
@@ -1184,6 +1193,41 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
+    if (autoAttackHotkeyInput) {
+      autoAttackHotkeyInput.value = String(bot.attack?.config?.hotbarSlot ?? 3);
+      autoAttackHotkeyInput.addEventListener("change", () => {
+        const hotbarSlot = Math.min(12, Math.max(1, Number(autoAttackHotkeyInput.value) || 1));
+        autoAttackHotkeyInput.value = String(hotbarSlot);
+        bot.attack.updateConfig({ hotbarSlot });
+      });
+    }
+
+    if (autoAttackMeleeInput) {
+      autoAttackMeleeInput.checked = bot.attack?.config?.meleeMode !== false;
+      autoAttackMeleeInput.addEventListener("change", () => {
+        bot.attack.updateConfig({ meleeMode: autoAttackMeleeInput.checked });
+      });
+    }
+
+    if (autoAttackEnabledInput) {
+      autoAttackEnabledInput.checked = !!bot.attack?.status?.().running;
+      autoAttackEnabledInput.addEventListener("change", () => {
+        const hotbarSlot = Math.min(
+          12,
+          Math.max(1, Number(autoAttackHotkeyInput?.value) || bot.attack.config.hotbarSlot || 1)
+        );
+        const meleeMode = !!autoAttackMeleeInput?.checked;
+
+        if (autoAttackEnabledInput.checked) {
+          bot.attack.start({ hotbarSlot, meleeMode });
+        } else {
+          bot.attack.stop();
+        }
+
+        refreshAutoAttackStatus();
+      });
+    }
+
     if (talkApiKeyInput) {
       talkApiKeyInput.value = bot.talk?.config?.apiKey || "";
       talkApiKeyInput.addEventListener("change", () => {
@@ -1255,6 +1299,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     renderTrustedNames();
     refreshRuneStatus();
     refreshAutoHealStatus();
+    refreshAutoAttackStatus();
     refreshAutoEatStatus();
     refreshCaveStatus();
     refreshEquipRingStatus();
@@ -1292,6 +1337,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshXrayStatus,
     refreshRuneStatus,
     refreshAutoHealStatus,
+    refreshAutoAttackStatus,
     refreshAutoEatStatus,
     refreshCaveStatus,
     refreshEquipRingStatus,

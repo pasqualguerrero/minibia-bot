@@ -281,6 +281,10 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.heal.stop({ persistEnabled: false });
       }
 
+      if (this.attack?.stop) {
+        this.attack.stop({ persistEnabled: false });
+      }
+
       if (this.cave?.stop) {
         this.cave.stop({ persistEnabled: false });
       }
@@ -731,6 +735,26 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     });
   }
 
+  function getVisibleMonsters(options = {}) {
+    const { sameFloorOnly = false } = options;
+    const me = bot.getPlayerPosition();
+    if (!me) {
+      return [];
+    }
+
+    return getVisibleCreatures().filter((creature) => {
+      if (creature?.type === 0) {
+        return false;
+      }
+
+      if (!sameFloorOnly) {
+        return true;
+      }
+
+      return creature.__position?.z === me.z;
+    });
+  }
+
   function readCreatureHealth(creature) {
     if (!creature) {
       return null;
@@ -952,6 +976,18 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
         name: player.name,
         position: player.__position || null,
       })),
+      visibleMonsters: getVisibleMonsters().map((creature) => ({
+        id: creature.id,
+        name: creature.name,
+        type: creature.type,
+        position: creature.__position || null,
+      })),
+      visibleMonstersCurrentFloor: getVisibleMonsters({ sameFloorOnly: true }).map((creature) => ({
+        id: creature.id,
+        name: creature.name,
+        type: creature.type,
+        position: creature.__position || null,
+      })),
       overlayCreatures: getOverlayCreatures().map((creature) => ({
         id: creature.id,
         name: creature.name,
@@ -966,6 +1002,7 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
   bot.xray = {
     getVisibleCreatures,
     getVisiblePlayers,
+    getVisibleMonsters,
     getOverlayCreatures,
     startOverlay,
     stopOverlay,
@@ -1847,6 +1884,416 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
     canUseManaHeal,
     triggerHpHeal,
     triggerManaHeal,
+    normalizeHotbarSlot,
+    config,
+  };
+};
+window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+
+window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackModule(bot) {
+  const configStorageKey = "minibiaBot.attack.config";
+  const state = {
+    running: false,
+    timerId: null,
+    lastAttackAt: 0,
+    engagedTargetId: null,
+    lastChaseAt: 0,
+    lastChaseDestinationKey: null,
+  };
+
+  const config = Object.assign(
+    {
+      tickMs: 500,
+      attackCooldownMs: 1200,
+      hotbarSlot: 3,
+      meleeMode: true,
+      enabled: false,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+
+  function normalizeHotbarSlot(slot) {
+    const value = Number(slot);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    const normalized = Math.trunc(value);
+    if (normalized < 1 || normalized > 12) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  function getNearbyMonsters() {
+    return bot.xray?.getVisibleMonsters?.({ sameFloorOnly: true }) || [];
+  }
+
+  function normalizePosition(value) {
+    if (!value) {
+      return null;
+    }
+
+    const x = Number(value.x);
+    const y = Number(value.y);
+    const z = Number(value.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      return null;
+    }
+
+    return {
+      x: Math.trunc(x),
+      y: Math.trunc(y),
+      z: Math.trunc(z),
+    };
+  }
+
+  function getPositionKey(position) {
+    return position ? `${position.x},${position.y},${position.z}` : null;
+  }
+
+  function isAdjacentTile(from, to) {
+    if (!from || !to || Number(from.z) !== Number(to.z)) {
+      return false;
+    }
+
+    const dx = Math.abs(Number(from.x) - Number(to.x));
+    const dy = Math.abs(Number(from.y) - Number(to.y));
+    return (dx !== 0 || dy !== 0) && dx <= 1 && dy <= 1;
+  }
+
+  function isSameCreature(left, right) {
+    if (!left || !right) {
+      return false;
+    }
+
+    return left === right || left.id === right.id;
+  }
+
+  function findNearbyMonster(creature) {
+    if (!creature) {
+      return null;
+    }
+
+    const nearbyMonsters = getNearbyMonsters();
+    return nearbyMonsters.find((monster) => isSameCreature(monster, creature)) || null;
+  }
+
+  function findNearbyMonsterById(id) {
+    if (id == null) {
+      return null;
+    }
+
+    return getNearbyMonsters().find((monster) => monster?.id === id) || null;
+  }
+
+  function getCurrentTarget() {
+    return window.gameClient?.player?.__target || null;
+  }
+
+  function getCurrentFollowTarget() {
+    return window.gameClient?.player?.__followTarget || null;
+  }
+
+  function clearEngagedTarget() {
+    state.engagedTargetId = null;
+    state.lastChaseDestinationKey = null;
+  }
+
+  function getEngagedTarget() {
+    const currentTarget = getCurrentTarget();
+    if (currentTarget) {
+      state.engagedTargetId = currentTarget.id;
+      return currentTarget;
+    }
+
+    if (state.engagedTargetId == null) {
+      return null;
+    }
+
+    const followTarget = getCurrentFollowTarget();
+    if (followTarget && followTarget.id === state.engagedTargetId) {
+      return findNearbyMonster(followTarget) || followTarget;
+    }
+
+    const nearbyTarget = findNearbyMonsterById(state.engagedTargetId);
+    if (nearbyTarget) {
+      return nearbyTarget;
+    }
+
+    clearEngagedTarget();
+    return null;
+  }
+
+  function goToPosition(position) {
+    const from = bot.getPlayerPosition();
+    if (!from || !position) {
+      return false;
+    }
+
+    const to = new Position(position.x, position.y, position.z);
+
+    try {
+      window.gameClient?.world?.pathfinder?.findPath?.(from, to);
+      return true;
+    } catch (error) {
+      bot.log("auto attack pathing failed", { ...position, error: error?.message || error });
+      return false;
+    }
+  }
+
+  function findAdjacentWalkablePosition(targetPosition, playerPosition) {
+    if (!targetPosition || !playerPosition) {
+      return null;
+    }
+
+    const offsets = [
+      { x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 },
+      { x: -1, y: -1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: 1, y: 1 },
+    ];
+
+    offsets.sort((a, b) => {
+      const da = Math.abs(targetPosition.x + a.x - playerPosition.x) +
+        Math.abs(targetPosition.y + a.y - playerPosition.y);
+      const db = Math.abs(targetPosition.x + b.x - playerPosition.x) +
+        Math.abs(targetPosition.y + b.y - playerPosition.y);
+      return da - db;
+    });
+
+    for (const offset of offsets) {
+      const candidate = new Position(
+        targetPosition.x + offset.x,
+        targetPosition.y + offset.y,
+        targetPosition.z
+      );
+      const tile = window.gameClient?.world?.getTileFromWorldPosition?.(candidate);
+      if (tile?.isWalkable?.()) {
+        return normalizePosition(candidate);
+      }
+    }
+
+    return null;
+  }
+
+  function syncMeleeChase(now = Date.now()) {
+    if (!config.meleeMode) {
+      return false;
+    }
+
+    const target = getEngagedTarget();
+    if (!target) {
+      clearEngagedTarget();
+      return false;
+    }
+
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    const targetPosition = normalizePosition(target.getPosition?.() || target.__position);
+    if (!playerPosition || !targetPosition || playerPosition.z !== targetPosition.z) {
+      return false;
+    }
+
+    if (isAdjacentTile(playerPosition, targetPosition)) {
+      state.lastChaseDestinationKey = null;
+      return false;
+    }
+
+    const adjacentPosition = findAdjacentWalkablePosition(targetPosition, playerPosition);
+    if (!adjacentPosition) {
+      return false;
+    }
+
+    const destinationKey = getPositionKey(adjacentPosition);
+    if (
+      destinationKey === state.lastChaseDestinationKey &&
+      now - state.lastChaseAt < Math.max(350, Number(config.tickMs) || 0)
+    ) {
+      return false;
+    }
+
+    const moved = goToPosition(adjacentPosition);
+    if (moved) {
+      state.lastChaseAt = now;
+      state.lastChaseDestinationKey = destinationKey;
+      bot.log("chasing auto attack target", {
+        id: target.id,
+        name: target.name || "Mob",
+        destination: adjacentPosition,
+      });
+    }
+
+    return moved;
+  }
+
+  function canAttack(now = Date.now()) {
+    const slot = normalizeHotbarSlot(config.hotbarSlot);
+    if (!slot) {
+      return false;
+    }
+
+    if (now - state.lastAttackAt < Math.max(0, Number(config.attackCooldownMs) || 0)) {
+      return false;
+    }
+
+    if (config.meleeMode) {
+      return getNearbyMonsters().length > 0 && !getEngagedTarget();
+    }
+
+    return getNearbyMonsters().length > 0;
+  }
+
+  function triggerAttack(now = Date.now()) {
+    if (!canAttack(now)) {
+      return false;
+    }
+
+    const slot = normalizeHotbarSlot(config.hotbarSlot);
+    const clicked = bot.clickHotbar(slot - 1);
+    if (clicked) {
+      const monsters = getNearbyMonsters();
+      state.lastAttackAt = now;
+      bot.log("used auto attack hotkey", {
+        slot,
+        nearbyMonsters: monsters.map((creature) => creature.name || "Mob"),
+      });
+    }
+
+    return clicked;
+  }
+
+  function tryAttack() {
+    if (!config.enabled) {
+      return false;
+    }
+
+    if (config.meleeMode) {
+      if (syncMeleeChase(Date.now())) {
+        return true;
+      }
+
+      if (getEngagedTarget()) {
+        return false;
+      }
+    }
+
+    return triggerAttack(Date.now());
+  }
+
+  function scheduleNextTick() {
+    if (!state.running) return;
+
+    state.timerId = window.setTimeout(() => {
+      tick();
+    }, config.tickMs);
+  }
+
+  function tick() {
+    if (!state.running) return;
+
+    try {
+      tryAttack();
+    } catch (error) {
+      bot.log("auto attack tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
+  }
+
+  function start(overrides = {}) {
+    Object.assign(config, overrides, { enabled: true });
+    persistConfig();
+
+    if (state.running) {
+      bot.log("auto attack already running");
+      return false;
+    }
+
+    state.running = true;
+    bot.log("auto attack started", { ...config });
+    tick();
+    return true;
+  }
+
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
+    state.running = false;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
+
+    clearEngagedTarget();
+    state.lastChaseAt = 0;
+
+    bot.log("auto attack stopped");
+    return true;
+  }
+
+  function status() {
+    return {
+      running: state.running,
+      config: { ...config },
+      lastAttackAt: state.lastAttackAt,
+      engagedTargetId: state.engagedTargetId,
+      lastChaseAt: state.lastChaseAt,
+      currentTarget: getCurrentTarget()
+        ? {
+            id: getCurrentTarget().id,
+            name: getCurrentTarget().name,
+            type: getCurrentTarget().type,
+            position: getCurrentTarget().__position || null,
+          }
+        : null,
+      nearbyMonsters: getNearbyMonsters().map((creature) => ({
+        id: creature.id,
+        name: creature.name,
+        type: creature.type,
+        position: creature.__position || null,
+      })),
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "hotbarSlot")) {
+      nextConfig.hotbarSlot = normalizeHotbarSlot(nextConfig.hotbarSlot) ?? config.hotbarSlot;
+    }
+
+    Object.assign(config, nextConfig);
+    persistConfig();
+    bot.log("auto attack config updated", { ...config });
+    return { ...config };
+  }
+
+  if (config.enabled) {
+    start();
+  }
+
+  bot.addCleanup(() => {
+    stop({ persistEnabled: false });
+  });
+
+  bot.attack = {
+    start,
+    stop,
+    status,
+    updateConfig,
+    tryAttack,
+    canAttack,
+    triggerAttack,
+    getNearbyMonsters,
+    getCurrentTarget,
+    getCurrentFollowTarget,
+    syncMeleeChase,
     normalizeHotbarSlot,
     config,
   };
@@ -4635,6 +5082,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoHealToggle.checked = !!bot.heal?.status?.().running;
   }
 
+  function refreshAutoAttackStatus() {
+    const autoAttackToggle = document.getElementById("minibia-bot-auto-attack-enabled");
+    if (!autoAttackToggle) return;
+
+    autoAttackToggle.checked = !!bot.attack?.status?.().running;
+  }
+
   function refreshCaveStatus() {
     const statusLabel = document.getElementById("minibia-bot-cave-status");
     const startButton = document.getElementById("minibia-bot-cave-start");
@@ -5272,7 +5726,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
           <div class="mb-section mb-column-section">
-            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
+            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, auto attack, and talk.</div>
           </div>
         </div>
         <div class="mb-side-column">
@@ -5333,10 +5787,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-clear">Clear</button>
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-clear-transitions">Clear Learned Transitions</button>
-              </div>
-              <div class="mb-actions">
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-refresh-closest">Refresh Closest</button>
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
               <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
@@ -5346,6 +5796,24 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-status">Status: no waypoints</div>
               <div class="mb-small-note">Record Spot saves only route tiles. Floor changes are learned automatically from observed z-changes near floor-change tiles.</div>
+            </div>
+          </div>
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Auto Attack</div>
+            <div class="mb-stack">
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-auto-attack-enabled" />
+                <span>Enable Auto Attack</span>
+              </label>
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-auto-attack-melee" />
+                <span>Melee Mode</span>
+              </label>
+              <label class="mb-field" for="minibia-bot-auto-attack-hotkey">
+                <span class="mb-field-label">Attack Hotkey (1-12)</span>
+                <input type="number" id="minibia-bot-auto-attack-hotkey" min="1" max="12" placeholder="3" />
+              </label>
+              <div class="mb-small-note">Melee mode acquires a target once, then walks adjacent to that target until it dies or disappears. Non-melee mode keeps re-pressing while monsters are nearby.</div>
             </div>
           </div>
         </div>
@@ -5379,6 +5847,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
     const autoHealMinManaInput = panel.querySelector("#minibia-bot-auto-heal-min-mana");
     const autoHealManaHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-mana-hotkey");
+    const autoAttackEnabledInput = panel.querySelector("#minibia-bot-auto-attack-enabled");
+    const autoAttackMeleeInput = panel.querySelector("#minibia-bot-auto-attack-melee");
+    const autoAttackHotkeyInput = panel.querySelector("#minibia-bot-auto-attack-hotkey");
     const talkEnabledInput = panel.querySelector("#minibia-bot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-bot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-bot-talk-prompt");
@@ -5394,8 +5865,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const caveRecordButton = panel.querySelector("#minibia-bot-cave-record");
     const caveRemoveLastButton = panel.querySelector("#minibia-bot-cave-remove-last");
     const caveClearButton = panel.querySelector("#minibia-bot-cave-clear");
-    const caveClearTransitionsButton = panel.querySelector("#minibia-bot-cave-clear-transitions");
-    const caveRefreshClosestButton = panel.querySelector("#minibia-bot-cave-refresh-closest");
     const caveStartButton = panel.querySelector("#minibia-bot-cave-start");
     const caveStopButton = panel.querySelector("#minibia-bot-cave-stop");
 
@@ -5566,19 +6035,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
-    if (caveClearTransitionsButton) {
-      caveClearTransitionsButton.addEventListener("click", () => {
-        bot.cave.clearTransitions();
-        refreshCaveTransitionStatus();
-      });
-    }
-
-    if (caveRefreshClosestButton) {
-      caveRefreshClosestButton.addEventListener("click", () => {
-        refreshCaveClosestStatus();
-      });
-    }
-
     if (caveStartButton) {
       caveStartButton.addEventListener("click", () => {
         bot.cave.start();
@@ -5657,6 +6113,41 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
+    if (autoAttackHotkeyInput) {
+      autoAttackHotkeyInput.value = String(bot.attack?.config?.hotbarSlot ?? 3);
+      autoAttackHotkeyInput.addEventListener("change", () => {
+        const hotbarSlot = Math.min(12, Math.max(1, Number(autoAttackHotkeyInput.value) || 1));
+        autoAttackHotkeyInput.value = String(hotbarSlot);
+        bot.attack.updateConfig({ hotbarSlot });
+      });
+    }
+
+    if (autoAttackMeleeInput) {
+      autoAttackMeleeInput.checked = bot.attack?.config?.meleeMode !== false;
+      autoAttackMeleeInput.addEventListener("change", () => {
+        bot.attack.updateConfig({ meleeMode: autoAttackMeleeInput.checked });
+      });
+    }
+
+    if (autoAttackEnabledInput) {
+      autoAttackEnabledInput.checked = !!bot.attack?.status?.().running;
+      autoAttackEnabledInput.addEventListener("change", () => {
+        const hotbarSlot = Math.min(
+          12,
+          Math.max(1, Number(autoAttackHotkeyInput?.value) || bot.attack.config.hotbarSlot || 1)
+        );
+        const meleeMode = !!autoAttackMeleeInput?.checked;
+
+        if (autoAttackEnabledInput.checked) {
+          bot.attack.start({ hotbarSlot, meleeMode });
+        } else {
+          bot.attack.stop();
+        }
+
+        refreshAutoAttackStatus();
+      });
+    }
+
     if (talkApiKeyInput) {
       talkApiKeyInput.value = bot.talk?.config?.apiKey || "";
       talkApiKeyInput.addEventListener("change", () => {
@@ -5728,6 +6219,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     renderTrustedNames();
     refreshRuneStatus();
     refreshAutoHealStatus();
+    refreshAutoAttackStatus();
     refreshAutoEatStatus();
     refreshCaveStatus();
     refreshEquipRingStatus();
@@ -5765,6 +6257,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshXrayStatus,
     refreshRuneStatus,
     refreshAutoHealStatus,
+    refreshAutoAttackStatus,
     refreshAutoEatStatus,
     refreshCaveStatus,
     refreshEquipRingStatus,
@@ -5785,6 +6278,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
   const persistedEnabledModules = [
     ["rune", "minibiaBot.rune.config"],
     ["heal", "minibiaBot.heal.config"],
+    ["attack", "minibiaBot.attack.config"],
     ["cave", "minibiaBot.cave.config"],
     ["equipRing", "minibiaBot.equipRing.config"],
     ["eat", "minibiaBot.eat.config"],
@@ -5841,6 +6335,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     currentBundle.installPanicModule(bot);
     currentBundle.installRuneModule(bot);
     currentBundle.installHealModule(bot);
+    currentBundle.installAutoAttackModule(bot);
     currentBundle.installCaveModule(bot);
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
@@ -5861,6 +6356,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       panic: bot.panic.status(),
       rune: bot.rune.status(),
       heal: bot.heal.status(),
+      attack: bot.attack.status(),
       cave: bot.cave.status(),
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
@@ -5872,7 +6368,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "cave", "equipRing", "eat", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "attack", "cave", "equipRing", "eat", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -5884,6 +6380,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     console.log("minibiaBot.rune.stop()");
     console.log("minibiaBot.heal.start()");
     console.log("minibiaBot.heal.stop()");
+    console.log("minibiaBot.attack.start()");
+    console.log("minibiaBot.attack.stop()");
     console.log("minibiaBot.cave.addWaypointCurrentSpot()");
     console.log("minibiaBot.cave.start()");
     console.log("minibiaBot.cave.stop()");
