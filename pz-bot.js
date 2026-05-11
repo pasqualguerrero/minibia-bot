@@ -1679,12 +1679,18 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
     timerId: null,
     lastHpHealAt: 0,
     lastManaHealAt: 0,
+    lastHpAttemptAt: 0,
+    lastManaAttemptAt: 0,
+    pendingHpAttempt: null,
+    pendingManaAttempt: null,
   };
 
   const config = Object.assign(
     {
-      tickMs: 1000,
+      tickMs: 50,
       healCooldownMs: 1200,
+      healRetryMs: 200,
+      healConfirmMs: 250,
       minHp: 250,
       hpHotbarSlot: 1,
       minMana: 150,
@@ -1729,47 +1735,120 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
     return normalized;
   }
 
-  function canUseHpHeal(now = Date.now()) {
-    const { hp } = readStats();
+  function hasPendingAttempt() {
+    return !!(state.pendingHpAttempt || state.pendingManaAttempt);
+  }
+
+  function didHpHealSucceed(stats, attempt) {
+    if (!stats?.hp || !attempt) {
+      return false;
+    }
+
+    return (
+      stats.hp.current > attempt.hpBefore ||
+      (Number.isFinite(attempt.manaBefore) && Number.isFinite(stats.mana?.current) && stats.mana.current < attempt.manaBefore)
+    );
+  }
+
+  function didManaHealSucceed(stats, attempt) {
+    if (!stats?.mana || !attempt) {
+      return false;
+    }
+
+    return (
+      stats.mana.current > attempt.manaBefore ||
+      (Number.isFinite(attempt.hpBefore) && Number.isFinite(stats.hp?.current) && stats.hp.current > attempt.hpBefore)
+    );
+  }
+
+  function resolvePendingAttempts(stats, now = Date.now()) {
+    const hpAttempt = state.pendingHpAttempt;
+    if (hpAttempt) {
+      if (didHpHealSucceed(stats, hpAttempt)) {
+        state.lastHpHealAt = hpAttempt.attemptedAt;
+        state.pendingHpAttempt = null;
+        bot.log("confirmed hp heal", { slot: hpAttempt.slot });
+      } else if (now - hpAttempt.attemptedAt >= Math.max(50, Number(config.healConfirmMs) || 0)) {
+        state.pendingHpAttempt = null;
+        bot.log("hp heal did not register", { slot: hpAttempt.slot });
+      }
+    }
+
+    const manaAttempt = state.pendingManaAttempt;
+    if (manaAttempt) {
+      if (didManaHealSucceed(stats, manaAttempt)) {
+        state.lastManaHealAt = manaAttempt.attemptedAt;
+        state.pendingManaAttempt = null;
+        bot.log("confirmed mana heal", { slot: manaAttempt.slot });
+      } else if (now - manaAttempt.attemptedAt >= Math.max(50, Number(config.healConfirmMs) || 0)) {
+        state.pendingManaAttempt = null;
+        bot.log("mana heal did not register", { slot: manaAttempt.slot });
+      }
+    }
+  }
+
+  function canUseHpHeal(now = Date.now(), stats = readStats()) {
+    const { hp } = stats;
     const slot = normalizeHotbarSlot(config.hpHotbarSlot);
-    if (!hp || !slot) return false;
+    if (!hp || !slot || state.pendingHpAttempt) return false;
 
-    return hp.current > 0 && hp.current <= Math.max(0, Number(config.minHp) || 0) && now - state.lastHpHealAt >= config.healCooldownMs;
+    return (
+      hp.current > 0 &&
+      hp.current <= Math.max(0, Number(config.minHp) || 0) &&
+      now - state.lastHpHealAt >= config.healCooldownMs &&
+      now - state.lastHpAttemptAt >= Math.max(50, Number(config.healRetryMs) || 0)
+    );
   }
 
-  function canUseManaHeal(now = Date.now()) {
-    const { mana } = readStats();
+  function canUseManaHeal(now = Date.now(), stats = readStats()) {
+    const { mana } = stats;
     const slot = normalizeHotbarSlot(config.manaHotbarSlot);
-    if (!mana || !slot) return false;
+    if (!mana || !slot || state.pendingManaAttempt || state.pendingHpAttempt) return false;
 
-    return mana.current <= Math.max(0, Number(config.minMana) || 0) && now - state.lastManaHealAt >= config.healCooldownMs;
+    return (
+      mana.current <= Math.max(0, Number(config.minMana) || 0) &&
+      now - state.lastManaHealAt >= config.healCooldownMs &&
+      now - state.lastManaAttemptAt >= Math.max(50, Number(config.healRetryMs) || 0)
+    );
   }
 
-  function triggerHpHeal(now = Date.now()) {
-    if (!canUseHpHeal(now)) {
+  function triggerHpHeal(now = Date.now(), stats = readStats()) {
+    if (!canUseHpHeal(now, stats)) {
       return false;
     }
 
     const slot = normalizeHotbarSlot(config.hpHotbarSlot);
     const clicked = bot.clickHotbar(slot - 1);
     if (clicked) {
-      state.lastHpHealAt = now;
-      bot.log("used hp heal hotkey", { slot, minHp: config.minHp });
+      state.lastHpAttemptAt = now;
+      state.pendingHpAttempt = {
+        attemptedAt: now,
+        slot,
+        hpBefore: Number(stats.hp?.current ?? 0),
+        manaBefore: Number(stats.mana?.current ?? 0),
+      };
+      bot.log("pressed hp heal hotkey", { slot, minHp: config.minHp });
     }
 
     return clicked;
   }
 
-  function triggerManaHeal(now = Date.now()) {
-    if (!canUseManaHeal(now)) {
+  function triggerManaHeal(now = Date.now(), stats = readStats()) {
+    if (!canUseManaHeal(now, stats)) {
       return false;
     }
 
     const slot = normalizeHotbarSlot(config.manaHotbarSlot);
     const clicked = bot.clickHotbar(slot - 1);
     if (clicked) {
-      state.lastManaHealAt = now;
-      bot.log("used mana heal hotkey", { slot, minMana: config.minMana });
+      state.lastManaAttemptAt = now;
+      state.pendingManaAttempt = {
+        attemptedAt: now,
+        slot,
+        hpBefore: Number(stats.hp?.current ?? 0),
+        manaBefore: Number(stats.mana?.current ?? 0),
+      };
+      bot.log("pressed mana heal hotkey", { slot, minMana: config.minMana });
     }
 
     return clicked;
@@ -1781,12 +1860,19 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
     }
 
     const now = Date.now();
+    const stats = readStats();
 
-    if (triggerHpHeal(now)) {
+    resolvePendingAttempts(stats, now);
+
+    if (hasPendingAttempt()) {
+      return false;
+    }
+
+    if (triggerHpHeal(now, stats)) {
       return true;
     }
 
-    return triggerManaHeal(now);
+    return triggerManaHeal(now, stats);
   }
 
   function scheduleNextTick() {
@@ -1800,8 +1886,13 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
   function tick() {
     if (!state.running) return;
 
-    tryHeal();
-    scheduleNextTick();
+    try {
+      tryHeal();
+    } catch (error) {
+      bot.log("auto heal tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
   }
 
   function start(overrides = {}) {
@@ -1843,6 +1934,10 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
       stats: readStats(),
       lastHpHealAt: state.lastHpHealAt,
       lastManaHealAt: state.lastManaHealAt,
+      lastHpAttemptAt: state.lastHpAttemptAt,
+      lastManaAttemptAt: state.lastManaAttemptAt,
+      pendingHpAttempt: state.pendingHpAttempt ? { ...state.pendingHpAttempt } : null,
+      pendingManaAttempt: state.pendingManaAttempt ? { ...state.pendingManaAttempt } : null,
     };
   }
 
@@ -1861,6 +1956,14 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "minMana")) {
       nextConfig.minMana = Math.max(0, Number(nextConfig.minMana) || 0);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "healRetryMs")) {
+      nextConfig.healRetryMs = Math.max(50, Number(nextConfig.healRetryMs) || 50);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "healConfirmMs")) {
+      nextConfig.healConfirmMs = Math.max(50, Number(nextConfig.healConfirmMs) || 50);
     }
 
     Object.assign(config, nextConfig);
@@ -5895,7 +5998,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                   <input type="number" id="minibia-bot-auto-heal-mana-hotkey" min="1" max="12" placeholder="2" />
                 </label>
               </div>
-              <div class="mb-small-note">Checks once per second. HP is used before mana if both are low.</div>
+              <div class="mb-small-note">Checks about twenty times per second. HP is used before mana, and unregistered hotkey presses are retried quickly.</div>
             </div>
           </div>
           <div class="mb-section mb-column-section">

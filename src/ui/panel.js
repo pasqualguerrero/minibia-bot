@@ -854,7 +854,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                   <input type="number" id="minibia-bot-auto-heal-mana-hotkey" min="1" max="12" placeholder="2" />
                 </label>
               </div>
-              <div class="mb-small-note">Checks once per second. HP is used before mana if both are low.</div>
+              <div class="mb-small-note">Checks about twenty times per second. HP is used before mana, and unregistered hotkey presses are retried quickly.</div>
             </div>
           </div>
           <div class="mb-section mb-column-section">
