@@ -672,9 +672,12 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
   const config = Object.assign(
     {
       overlayEnabled: false,
+      selectedFloor: null,
     },
     bot.storage.get(configStorageKey, {})
   );
+
+  config.selectedFloor = normalizeSelectedFloor(config.selectedFloor);
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -682,6 +685,19 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
 
   function normalizeName(name) {
     return String(name || "").trim().toLowerCase();
+  }
+
+  function normalizeSelectedFloor(value) {
+    if (value == null || value === "" || value === "all") {
+      return null;
+    }
+
+    const floor = Number(value);
+    if (!Number.isFinite(floor)) {
+      return null;
+    }
+
+    return Math.trunc(floor);
   }
 
   function isWithinVisibleRange(me, pos) {
@@ -818,6 +834,10 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     return getTrackedCreatures().filter((creature) => {
       const pos = creature?.__position;
       if (!pos || pos.z == null) {
+        return false;
+      }
+
+      if (config.selectedFloor != null && pos.z !== config.selectedFloor) {
         return false;
       }
 
@@ -1014,6 +1034,17 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     return stopOverlay();
   }
 
+  function setSelectedFloor(floor) {
+    config.selectedFloor = normalizeSelectedFloor(floor);
+    persistConfig();
+
+    if (overlayState.running) {
+      renderOverlay();
+    }
+
+    return config.selectedFloor;
+  }
+
   function status() {
     return {
       visibleCreatures: getVisibleCreatures().map((creature) => ({
@@ -1063,6 +1094,7 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     startOverlay,
     stopOverlay,
     setOverlayEnabled,
+    setSelectedFloor,
     status,
     config,
   };
@@ -5720,15 +5752,63 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
   function refreshXrayStatus() {
     const status = bot.xray?.status?.();
+    const me = bot.getPlayerPosition?.();
     const overlayButton = document.getElementById("minibia-bot-xray-overlay-toggle");
     const overlayLabel = document.getElementById("minibia-bot-xray-overlay-status");
+    const floorSelect = document.getElementById("minibia-bot-xray-floor-select");
+    const formatFloorOffset = (floor) => {
+      if (!me || floor == null) {
+        return null;
+      }
+
+      const offset = me.z - floor;
+      return offset === 0 ? "0" : offset > 0 ? `+${offset}` : `${offset}`;
+    };
 
     if (overlayButton) {
       overlayButton.textContent = status?.config?.overlayEnabled ? "Disable Overlay" : "Enable Overlay";
     }
 
     if (overlayLabel) {
-      overlayLabel.textContent = status?.config?.overlayEnabled ? "Overlay: on" : "Overlay: off";
+      const floorLabel = status?.config?.selectedFloor == null
+        ? "all floors"
+        : `${formatFloorOffset(status.config.selectedFloor) ?? "?"}`;
+      overlayLabel.textContent = `${status?.config?.overlayEnabled ? "Overlay: on" : "Overlay: off"} • ${floorLabel}`;
+    }
+
+    if (floorSelect) {
+      const floors = Array.from(
+        new Set(
+          (status?.visibleCreatures || [])
+            .map((creature) => creature?.position?.z)
+            .filter((floor) => floor != null)
+        )
+      ).sort((a, b) => a - b);
+      const selectedFloor = status?.config?.selectedFloor;
+
+      if (selectedFloor != null && !floors.includes(selectedFloor)) {
+        floors.push(selectedFloor);
+        floors.sort((a, b) => a - b);
+      }
+
+      floorSelect.innerHTML = "";
+
+      const allOption = document.createElement("option");
+      allOption.value = "all";
+      allOption.textContent = "All floors";
+      floorSelect.appendChild(allOption);
+
+      floors.forEach((floor) => {
+        const option = document.createElement("option");
+        option.value = String(floor);
+        const offsetLabel = formatFloorOffset(floor);
+        option.textContent = offsetLabel == null
+          ? String(floor)
+          : offsetLabel;
+        floorSelect.appendChild(option);
+      });
+
+      floorSelect.value = selectedFloor == null ? "all" : String(selectedFloor);
     }
   }
 
@@ -6000,7 +6080,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (!list) return;
 
     const me = bot.getPlayerPosition?.();
-    const creatures = bot.xray?.status?.().visibleCreatures || [];
+    const status = bot.xray?.status?.();
+    const creatures = status?.visibleCreatures || [];
+    const selectedFloor = status?.config?.selectedFloor;
     list.innerHTML = "";
 
     if (!me) {
@@ -6015,7 +6097,18 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const getFloorDistance = (creature) => Math.abs(getFloorOffset(creature));
 
     const visibleCreatures = creatures
-      .filter((creature) => creature?.position?.z != null && creature.position.z !== me.z)
+      .filter((creature) => {
+        const floor = creature?.position?.z;
+        if (floor == null) {
+          return false;
+        }
+
+        if (selectedFloor != null) {
+          return floor === selectedFloor;
+        }
+
+        return floor !== me.z;
+      })
       .sort((a, b) => {
       const floorDistanceDiff = getFloorDistance(a) - getFloorDistance(b);
       if (floorDistanceDiff !== 0) return floorDistanceDiff;
@@ -6031,7 +6124,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (!visibleCreatures.length) {
       const empty = document.createElement("div");
       empty.className = "mb-small-note";
-      empty.textContent = "No off-floor creatures.";
+      empty.textContent = selectedFloor == null
+        ? "No off-floor creatures."
+        : `No creatures on floor ${selectedFloor}.`;
       list.appendChild(empty);
       return;
     }
@@ -6048,7 +6143,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
         const floorLabel = document.createElement("div");
         floorLabel.className = "mb-floor-label";
-        floorLabel.textContent = `Floor ${floor} (${floorOffsetLabel})`;
+        floorLabel.textContent = floorOffsetLabel;
         list.appendChild(floorLabel);
       }
 
@@ -6548,6 +6643,12 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             <div class="mb-label">Xray</div>
             <button type="button" class="mb-small-button" id="minibia-bot-xray-overlay-toggle">Disable Overlay</button>
             <div class="mb-small-note" id="minibia-bot-xray-overlay-status">Overlay: on</div>
+            <label class="mb-field" for="minibia-bot-xray-floor-select">
+              <span class="mb-field-label">Floor Filter</span>
+              <select id="minibia-bot-xray-floor-select">
+                <option value="all">All floors</option>
+              </select>
+            </label>
             <div class="mb-list" id="minibia-bot-visible-creatures-list"></div>
           </div>
           <div class="mb-section mb-column-section">
@@ -6687,6 +6788,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const panicTrustedInput = panel.querySelector("#minibia-bot-panic-trusted-input");
     const panicTrustedAddButton = panel.querySelector("#minibia-bot-panic-trusted-add");
     const xrayOverlayButton = panel.querySelector("#minibia-bot-xray-overlay-toggle");
+    const xrayFloorSelect = panel.querySelector("#minibia-bot-xray-floor-select");
     const collapseButton = panel.querySelector("#minibia-bot-collapse");
     const reloadButton = panel.querySelector("#minibia-bot-reload");
     const caveRecordButton = panel.querySelector("#minibia-bot-cave-record");
@@ -7119,6 +7221,15 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         const enabled = !!bot.xray?.status?.().config?.overlayEnabled;
         bot.xray?.setOverlayEnabled?.(!enabled);
         refreshXrayStatus();
+      });
+    }
+
+    if (xrayFloorSelect) {
+      xrayFloorSelect.addEventListener("change", () => {
+        const rawValue = xrayFloorSelect.value;
+        bot.xray?.setSelectedFloor?.(rawValue === "all" ? null : Number(rawValue));
+        refreshXrayStatus();
+        refreshVisibleCreatures();
       });
     }
 

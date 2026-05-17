@@ -11,9 +11,12 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
   const config = Object.assign(
     {
       overlayEnabled: false,
+      selectedFloor: null,
     },
     bot.storage.get(configStorageKey, {})
   );
+
+  config.selectedFloor = normalizeSelectedFloor(config.selectedFloor);
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -21,6 +24,19 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
 
   function normalizeName(name) {
     return String(name || "").trim().toLowerCase();
+  }
+
+  function normalizeSelectedFloor(value) {
+    if (value == null || value === "" || value === "all") {
+      return null;
+    }
+
+    const floor = Number(value);
+    if (!Number.isFinite(floor)) {
+      return null;
+    }
+
+    return Math.trunc(floor);
   }
 
   function isWithinVisibleRange(me, pos) {
@@ -157,6 +173,10 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     return getTrackedCreatures().filter((creature) => {
       const pos = creature?.__position;
       if (!pos || pos.z == null) {
+        return false;
+      }
+
+      if (config.selectedFloor != null && pos.z !== config.selectedFloor) {
         return false;
       }
 
@@ -353,6 +373,17 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     return stopOverlay();
   }
 
+  function setSelectedFloor(floor) {
+    config.selectedFloor = normalizeSelectedFloor(floor);
+    persistConfig();
+
+    if (overlayState.running) {
+      renderOverlay();
+    }
+
+    return config.selectedFloor;
+  }
+
   function status() {
     return {
       visibleCreatures: getVisibleCreatures().map((creature) => ({
@@ -402,6 +433,7 @@ window.__minibiaBotBundle.installXrayModule = function installXrayModule(bot) {
     startOverlay,
     stopOverlay,
     setOverlayEnabled,
+    setSelectedFloor,
     status,
     config,
   };
