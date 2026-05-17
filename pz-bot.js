@@ -2817,6 +2817,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
   const configStorageKey = "minibiaBot.cave.config";
   const routeStorageKey = "minibiaBot.cave.route";
   const transitionStorageKey = "minibiaBot.cave.transitions";
+  const presetStorageKey = "minibiaBot.cave.presets";
+  const defaultPresetName = "Default";
   const minimapOverlayRootId = "minibia-bot-cave-minimap-overlay";
   const minimapOverlayStyleId = "minibia-bot-cave-minimap-overlay-style";
   const ladderItemIds = new Set([1948, 1968]);
@@ -2852,28 +2854,166 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       repathMs: 1500,
       waypointTolerance: 0,
       enabled: false,
+      activePresetName: defaultPresetName,
     },
     bot.storage.get(configStorageKey, {})
   );
   config.tickMs = 500;
 
+  function normalizePresetName(value) {
+    const normalized = String(value || "").trim().replace(/\s+/g, " ");
+    return normalized || null;
+  }
+
+  function cloneValue(value) {
+    return value ? JSON.parse(JSON.stringify(value)) : null;
+  }
+
+  function normalizePreset(value) {
+    if (!value) {
+      return null;
+    }
+
+    const name = normalizePresetName(value.name);
+    if (!name) {
+      return null;
+    }
+
+    return {
+      name,
+      route: normalizeRoute(value.route),
+      transitions: normalizeTransitions(value.transitions),
+    };
+  }
+
+  function normalizePresets(value) {
+    const entries = Array.isArray(value) ? value : [];
+    const deduped = new Map();
+
+    entries.map(normalizePreset).filter(Boolean).forEach((preset) => {
+      deduped.set(preset.name.toLowerCase(), preset);
+    });
+
+    return Array.from(deduped.values());
+  }
+
   let route = normalizeRoute(bot.storage.get(routeStorageKey, []));
   let transitions = normalizeTransitions(bot.storage.get(transitionStorageKey, []));
+  let presets = normalizePresets(bot.storage.get(presetStorageKey, []));
+
+  if (!presets.length && (route.length || transitions.length)) {
+    presets = [{
+      name: defaultPresetName,
+      route: route.map((waypoint) => cloneValue(waypoint)),
+      transitions: transitions.map((transition) => cloneValue(transition)),
+    }];
+  }
+
+  function getPresetNames() {
+    return presets.map((preset) => preset.name);
+  }
+
+  function getPresetByName(name) {
+    const normalizedName = normalizePresetName(name);
+    if (!normalizedName) {
+      return null;
+    }
+
+    return presets.find((preset) => preset.name.toLowerCase() === normalizedName.toLowerCase()) || null;
+  }
+
+  function getActivePresetName() {
+    const configuredName = normalizePresetName(config.activePresetName);
+    if (configuredName && getPresetByName(configuredName)) {
+      return getPresetByName(configuredName).name;
+    }
+
+    if (presets.length) {
+      return presets[0].name;
+    }
+
+    return configuredName || defaultPresetName;
+  }
+
+  function persistPresets() {
+    bot.storage.set(
+      presetStorageKey,
+      presets.map((preset) => ({
+        name: preset.name,
+        route: preset.route.map((waypoint) => ({ ...waypoint })),
+        transitions: preset.transitions.map((transition) => cloneValue(transition)),
+      }))
+    );
+  }
+
+  function persistLegacyActivePreset() {
+    bot.storage.set(routeStorageKey, route.map((waypoint) => ({ ...waypoint })));
+    bot.storage.set(transitionStorageKey, transitions.map((transition) => cloneValue(transition)));
+  }
+
+  function setActivePresetName(name) {
+    config.activePresetName = normalizePresetName(name) || defaultPresetName;
+    persistConfig();
+    return config.activePresetName;
+  }
+
+  function upsertPreset(name, nextRoute = route, nextTransitions = transitions) {
+    const normalizedName = normalizePresetName(name);
+    if (!normalizedName) {
+      return null;
+    }
+
+    const preset = {
+      name: normalizedName,
+      route: normalizeRoute(nextRoute).map((waypoint) => cloneValue(waypoint)),
+      transitions: normalizeTransitions(nextTransitions).map((transition) => cloneValue(transition)),
+    };
+    const existingIndex = presets.findIndex((entry) => entry.name.toLowerCase() === normalizedName.toLowerCase());
+
+    if (existingIndex >= 0) {
+      presets[existingIndex] = preset;
+    } else {
+      presets.push(preset);
+    }
+
+    persistPresets();
+    return preset;
+  }
+
+  function persistActivePreset() {
+    upsertPreset(getActivePresetName(), route, transitions);
+    persistLegacyActivePreset();
+  }
+
+  function loadPresetState(name) {
+    const preset = getPresetByName(name);
+    if (!preset) {
+      return null;
+    }
+
+    route = normalizeRoute(preset.route);
+    transitions = normalizeTransitions(preset.transitions);
+    state.currentIndex = 0;
+    state.direction = 1;
+    state.pendingTransitionSource = null;
+    setActivePresetName(preset.name);
+    persistLegacyActivePreset();
+    return preset;
+  }
+
+  const initialActivePreset = getActivePresetName();
+  if (loadPresetState(initialActivePreset)) {
+    config.activePresetName = initialActivePreset;
+  } else {
+    setActivePresetName(initialActivePreset);
+  }
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
   }
 
   function persistRoute() {
-    bot.storage.set(routeStorageKey, route.map((waypoint) => ({ ...waypoint })));
-  }
-
-  function persistTransitions() {
-    bot.storage.set(transitionStorageKey, transitions.map((transition) => cloneValue(transition)));
-  }
-
-  function cloneValue(value) {
-    return value ? JSON.parse(JSON.stringify(value)) : null;
+    persistActivePreset();
   }
 
   function normalizePosition(value) {
@@ -2947,6 +3087,121 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
   function getTransitions() {
     return transitions.map((transition) => cloneValue(transition));
+  }
+
+  function persistTransitions() {
+    persistActivePreset();
+  }
+
+  function savePreset(name, options = {}) {
+    const preset = upsertPreset(name, route, transitions);
+    if (!preset) {
+      bot.log("cave preset name is required");
+      return null;
+    }
+
+    if (options.activate !== false) {
+      setActivePresetName(preset.name);
+      persistLegacyActivePreset();
+    }
+
+    bot.log("cave preset saved", {
+      name: preset.name,
+      waypoints: preset.route.length,
+      transitions: preset.transitions.length,
+    });
+    return {
+      name: preset.name,
+      route: preset.route.map((waypoint) => cloneValue(waypoint)),
+      transitions: preset.transitions.map((transition) => cloneValue(transition)),
+    };
+  }
+
+  function createPreset(name) {
+    const normalizedName = normalizePresetName(name);
+    if (!normalizedName) {
+      bot.log("cave preset name is required");
+      return null;
+    }
+
+    if (getPresetByName(normalizedName)) {
+      bot.log("cave preset already exists", { name: normalizedName });
+      return null;
+    }
+
+    if (state.running) {
+      stop();
+    }
+
+    const preset = upsertPreset(normalizedName, [], []);
+    if (!preset) {
+      return null;
+    }
+
+    loadPresetState(preset.name);
+    bot.log("cave preset created", { name: preset.name });
+    return {
+      name: preset.name,
+      route: [],
+      transitions: [],
+    };
+  }
+
+  function loadPreset(name) {
+    const preset = getPresetByName(name);
+    if (!preset) {
+      bot.log("cave preset not found", { name });
+      return null;
+    }
+
+    if (state.running) {
+      stop();
+    }
+
+    loadPresetState(preset.name);
+    bot.log("cave preset loaded", {
+      name: preset.name,
+      waypoints: route.length,
+      transitions: transitions.length,
+    });
+    return {
+      name: preset.name,
+      route: getRoute(),
+      transitions: getTransitions(),
+    };
+  }
+
+  function deletePreset(name) {
+    const preset = getPresetByName(name);
+    if (!preset) {
+      bot.log("cave preset not found", { name });
+      return false;
+    }
+
+    presets = presets.filter((entry) => entry.name.toLowerCase() !== preset.name.toLowerCase());
+    persistPresets();
+
+    if (preset.name.toLowerCase() === getActivePresetName().toLowerCase()) {
+      const fallbackPreset = presets[0] || null;
+      if (state.running) {
+        stop();
+      }
+
+      if (fallbackPreset) {
+        loadPresetState(fallbackPreset.name);
+      } else {
+        route = [];
+        transitions = [];
+        state.currentIndex = 0;
+        state.direction = 1;
+        state.pendingTransitionSource = null;
+        setActivePresetName(defaultPresetName);
+        persistLegacyActivePreset();
+      }
+    }
+
+    bot.log("cave preset deleted", { name: preset.name });
+    return true;
   }
 
   function getCurrentWaypoint() {
@@ -4158,6 +4413,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       config: { ...config },
       route: getRoute(),
       transitions: getTransitions(),
+      presetNames: getPresetNames(),
+      activePresetName: getActivePresetName(),
       currentIndex: state.currentIndex,
       direction: state.direction,
       currentWaypoint: cloneValue(waypoint),
@@ -4194,7 +4451,13 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     config,
     getRoute,
     getTransitions,
+    getPresetNames,
+    getActivePresetName,
     getCurrentWaypoint,
+    createPreset,
+    savePreset,
+    loadPreset,
+    deletePreset,
     addWaypoint,
     addWaypointCurrentSpot,
     clearWaypoints,
@@ -5596,6 +5859,50 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     }
   }
 
+  function refreshCavePresetControls() {
+    const select = document.getElementById("minibia-bot-cave-preset-select");
+    const label = document.getElementById("minibia-bot-cave-preset-status");
+    const deleteButton = document.getElementById("minibia-bot-cave-preset-delete");
+    const status = bot.cave?.status?.();
+    const presetNames = status?.presetNames || bot.cave?.getPresetNames?.() || [];
+    const activePresetName = status?.activePresetName || bot.cave?.getActivePresetName?.() || "Default";
+
+    if (select) {
+      const previousValue = select.value;
+      select.innerHTML = "";
+
+      if (!presetNames.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No saved presets";
+        select.appendChild(option);
+        select.disabled = true;
+      } else {
+        presetNames.forEach((name) => {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          select.appendChild(option);
+        });
+        select.disabled = false;
+        const nextValue = presetNames.includes(activePresetName) ? activePresetName : previousValue;
+        if (nextValue) {
+          select.value = nextValue;
+        }
+      }
+    }
+
+    if (label) {
+      label.textContent = presetNames.length
+        ? `Preset: ${activePresetName} (${presetNames.length} saved)`
+        : `Preset: ${activePresetName}`;
+    }
+
+    if (deleteButton) {
+      deleteButton.disabled = !presetNames.length || !select?.value;
+    }
+  }
+
   function refreshCaveClosestStatus() {
     const label = document.getElementById("minibia-bot-cave-closest");
     if (!label) return;
@@ -5945,6 +6252,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         gap: 6px;
       }
 
+      #minibia-bot-panel .mb-actions-inline-three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      #minibia-bot-panel .mb-actions-inline-two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       #minibia-bot-panel button {
         width: 100%;
         padding: 8px 10px;
@@ -6272,19 +6587,26 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
           <div class="mb-section mb-column-section">
             <div class="mb-label">Cave Bot</div>
             <div class="mb-stack">
-              <div class="mb-actions">
+              <div class="mb-field-grid">
+                <label class="mb-field" for="minibia-bot-cave-preset-select">
+                  <select id="minibia-bot-cave-preset-select"></select>
+                </label>
+              </div>
+              <div class="mb-actions mb-actions-inline-two">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-preset-new">New</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-preset-delete">Delete</button>
+              </div>
+              <div class="mb-actions mb-actions-inline-two">
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
-                <button type="button" class="mb-small-button" id="minibia-bot-cave-clear">Clear</button>
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
               <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
-              <div class="mb-actions">
+              <div class="mb-actions mb-actions-inline-two">
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-start">Start</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-stop">Stop</button>
               </div>
               <div class="mb-small-note" id="minibia-bot-cave-status">Status: no waypoints</div>
-              <div class="mb-small-note">Record Spot saves only route tiles. Floor changes are learned automatically from observed z-changes near floor-change tiles.</div>
             </div>
           </div>
           <div class="mb-section mb-column-section">
@@ -6359,9 +6681,11 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const reloadButton = panel.querySelector("#minibia-bot-reload");
     const caveRecordButton = panel.querySelector("#minibia-bot-cave-record");
     const caveRemoveLastButton = panel.querySelector("#minibia-bot-cave-remove-last");
-    const caveClearButton = panel.querySelector("#minibia-bot-cave-clear");
     const caveStartButton = panel.querySelector("#minibia-bot-cave-start");
     const caveStopButton = panel.querySelector("#minibia-bot-cave-stop");
+    const cavePresetSelect = panel.querySelector("#minibia-bot-cave-preset-select");
+    const cavePresetNewButton = panel.querySelector("#minibia-bot-cave-preset-new");
+    const cavePresetDeleteButton = panel.querySelector("#minibia-bot-cave-preset-delete");
 
     if (collapseButton) {
       collapseButton.addEventListener("click", () => {
@@ -6521,6 +6845,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveRecordButton) {
       caveRecordButton.addEventListener("click", () => {
         bot.cave.addWaypointCurrentSpot();
+        refreshCavePresetControls();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
       });
@@ -6529,15 +6854,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveRemoveLastButton) {
       caveRemoveLastButton.addEventListener("click", () => {
         bot.cave.removeLastWaypoint();
-        refreshCaveStatus();
-        refreshCaveClosestStatus();
-        refreshCaveTransitionStatus();
-      });
-    }
-
-    if (caveClearButton) {
-      caveClearButton.addEventListener("click", () => {
-        bot.cave.clearWaypoints();
+        refreshCavePresetControls();
         refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
@@ -6547,6 +6864,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveStartButton) {
       caveStartButton.addEventListener("click", () => {
         bot.cave.start();
+        refreshCavePresetControls();
         refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
@@ -6556,6 +6874,62 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveStopButton) {
       caveStopButton.addEventListener("click", () => {
         bot.cave.stop();
+        refreshCavePresetControls();
+        refreshCaveStatus();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (cavePresetSelect) {
+      cavePresetSelect.addEventListener("change", () => {
+        const name = cavePresetSelect.value || "";
+        const activePresetName = bot.cave?.getActivePresetName?.() || "";
+        if (!name || name === activePresetName) {
+          refreshCavePresetControls();
+          return;
+        }
+
+        const loadedPreset = bot.cave.loadPreset(name);
+        refreshCavePresetControls();
+        refreshCaveStatus();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (cavePresetNewButton) {
+      cavePresetNewButton.addEventListener("click", () => {
+        const name = window.prompt("Name the new cave preset:");
+        if (name == null) {
+          return;
+        }
+
+        const createdPreset = bot.cave.createPreset(name);
+        if (!createdPreset) {
+          return;
+        }
+
+        refreshCavePresetControls();
+        refreshCaveStatus();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (cavePresetDeleteButton) {
+      cavePresetDeleteButton.addEventListener("click", () => {
+        const name = cavePresetSelect?.value || "";
+        if (!name) {
+          return;
+        }
+
+        const deleted = bot.cave.deletePreset(name);
+        if (!deleted) {
+          return;
+        }
+
+        refreshCavePresetControls();
         refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
@@ -6756,6 +7130,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshEquipRingStatus();
     refreshTalkStatus();
     refreshVisibleCreatures();
+    refreshCavePresetControls();
     refreshCaveClosestStatus();
     refreshCaveTransitionStatus();
 
@@ -6771,6 +7146,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     const caveStatusTimerId = window.setInterval(() => {
       refreshCaveStatus();
+      refreshCavePresetControls();
       refreshCaveClosestStatus();
       refreshCaveTransitionStatus();
     }, 1000);
@@ -6791,6 +7167,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus,
     refreshAutoEatStatus,
     refreshCaveStatus,
+    refreshCavePresetControls,
     refreshEquipRingStatus,
     refreshTalkStatus,
     refreshVisibleCreatures,
