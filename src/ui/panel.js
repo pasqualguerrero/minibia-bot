@@ -38,6 +38,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
   function refreshPanicStatus() {
     const unknownToggle = document.getElementById("minibia-bot-panic-unknown");
     const healthToggle = document.getElementById("minibia-bot-panic-health");
+    const returnToggle = document.getElementById("minibia-bot-panic-return");
     const status = bot.panic?.status?.();
 
     if (unknownToggle) {
@@ -46,6 +47,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     if (healthToggle) {
       healthToggle.checked = !!status?.config?.healthLossEnabled;
+    }
+
+    if (returnToggle) {
+      returnToggle.checked = !!status?.config?.returnToOriginEnabled;
     }
   }
 
@@ -894,6 +899,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <input type="checkbox" id="minibia-bot-panic-health" />
                 <span>Lose Health</span>
               </label>
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-panic-return" />
+                <span>Auto Return</span>
+              </label>
               <div class="mb-inline">
                 <input type="text" id="minibia-bot-panic-trusted-input" placeholder="Trusted name" />
                 <button type="button" class="mb-small-button" id="minibia-bot-panic-trusted-add">Add</button>
@@ -1099,6 +1108,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const panicGmAddButton = panel.querySelector("#minibia-bot-panic-gm-add");
     const panicUnknownInput = panel.querySelector("#minibia-bot-panic-unknown");
     const panicHealthInput = panel.querySelector("#minibia-bot-panic-health");
+    const panicReturnInput = panel.querySelector("#minibia-bot-panic-return");
     const panicTrustedInput = panel.querySelector("#minibia-bot-panic-trusted-input");
     const panicTrustedAddButton = panel.querySelector("#minibia-bot-panic-trusted-add");
     const xrayOverlayButton = panel.querySelector("#minibia-bot-xray-overlay-toggle");
@@ -1539,6 +1549,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       panicHealthInput.checked = !!bot.panic?.status?.().config?.healthLossEnabled;
       panicHealthInput.addEventListener("change", () => {
         bot.panic.updateConfig({ healthLossEnabled: panicHealthInput.checked });
+        refreshPanicStatus();
+      });
+    }
+
+    if (panicReturnInput) {
+      panicReturnInput.checked = !!bot.panic?.status?.().config?.returnToOriginEnabled;
+      panicReturnInput.addEventListener("change", () => {
+        bot.panic.updateConfig({ returnToOriginEnabled: panicReturnInput.checked });
         refreshPanicStatus();
       });
     }
