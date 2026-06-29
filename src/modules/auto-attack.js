@@ -28,6 +28,9 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       runeCooldownMs: 1200,
       maxTargetDistance: 8,
       meleeMode: true,
+      targetFilterMode: "all",
+      includedCreatureNames: [],
+      excludedCreatureNames: [],
       enabled: false,
     },
     storedConfig
@@ -35,6 +38,9 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   if (config.targetHotbarSlot == null && storedConfig.hotbarSlot != null) {
     config.targetHotbarSlot = storedConfig.hotbarSlot;
   }
+  config.targetFilterMode = normalizeTargetFilterMode(config.targetFilterMode);
+  config.includedCreatureNames = normalizeCreatureNameList(config.includedCreatureNames);
+  config.excludedCreatureNames = normalizeCreatureNameList(config.excludedCreatureNames);
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -52,6 +58,64 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     }
 
     return normalized;
+  }
+
+  function normalizeCreatureName(name) {
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function normalizeCreatureNameList(list) {
+    if (!Array.isArray(list)) {
+      return [];
+    }
+
+    const seen = new Set();
+    const normalized = [];
+    list.forEach((name) => {
+      const cleaned = String(name || "").trim();
+      if (!cleaned) {
+        return;
+      }
+
+      const key = cleaned.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+
+      seen.add(key);
+      normalized.push(cleaned);
+    });
+
+    return normalized;
+  }
+
+  function normalizeTargetFilterMode(value) {
+    return value === "include" || value === "exclude" ? value : "all";
+  }
+
+  function shouldTargetCreature(target) {
+    if (!target) {
+      return false;
+    }
+
+    const mode = normalizeTargetFilterMode(config.targetFilterMode);
+    const targetName = normalizeCreatureName(target.name || "Mob");
+    const includedNames = new Set((config.includedCreatureNames || []).map(normalizeCreatureName));
+    const excludedNames = new Set((config.excludedCreatureNames || []).map(normalizeCreatureName));
+
+    if (mode === "include") {
+      if (!includedNames.size) {
+        return true;
+      }
+
+      return includedNames.has(targetName) && !excludedNames.has(targetName);
+    }
+
+    if (mode === "exclude") {
+      return !excludedNames.has(targetName);
+    }
+
+    return true;
   }
 
   function getNearbyMonsters() {
@@ -317,6 +381,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
 
     const playerPosition = normalizePosition(bot.getPlayerPosition());
     return getNearbyMonsters()
+      .filter((monster) => shouldTargetCreature(monster))
       .filter((monster) => !isTargetSkipped(monster, now))
       .sort((left, right) => {
         const leftDistance = getTileDistance(playerPosition, normalizePosition(left?.getPosition?.() || left?.__position));
@@ -518,7 +583,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       return getMonsterCandidates(now).length > 0 && !getCurrentTarget();
     }
 
-    return getNearbyMonsters().length > 0;
+    return getMonsterCandidates(now).length > 0;
   }
 
   function triggerAttack(now = Date.now()) {
@@ -598,6 +663,12 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     }
 
     const now = Date.now();
+    const engagedTarget = getEngagedTarget();
+    if (engagedTarget && !shouldTargetCreature(engagedTarget)) {
+      skipTarget(engagedTarget, "target does not match configured filters", now, 2000);
+      return true;
+    }
+
     if (resetTargetIfTooFar()) {
       return true;
     }
@@ -721,6 +792,18 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "maxTargetDistance")) {
       nextConfig.maxTargetDistance = Math.max(1, Math.trunc(Number(nextConfig.maxTargetDistance) || config.maxTargetDistance || 8));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "targetFilterMode")) {
+      nextConfig.targetFilterMode = normalizeTargetFilterMode(nextConfig.targetFilterMode);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "includedCreatureNames")) {
+      nextConfig.includedCreatureNames = normalizeCreatureNameList(nextConfig.includedCreatureNames);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "excludedCreatureNames")) {
+      nextConfig.excludedCreatureNames = normalizeCreatureNameList(nextConfig.excludedCreatureNames);
     }
 
     Object.assign(config, nextConfig);

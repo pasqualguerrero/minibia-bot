@@ -2757,6 +2757,9 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       runeCooldownMs: 1200,
       maxTargetDistance: 8,
       meleeMode: true,
+      targetFilterMode: "all",
+      includedCreatureNames: [],
+      excludedCreatureNames: [],
       enabled: false,
     },
     storedConfig
@@ -2764,6 +2767,9 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   if (config.targetHotbarSlot == null && storedConfig.hotbarSlot != null) {
     config.targetHotbarSlot = storedConfig.hotbarSlot;
   }
+  config.targetFilterMode = normalizeTargetFilterMode(config.targetFilterMode);
+  config.includedCreatureNames = normalizeCreatureNameList(config.includedCreatureNames);
+  config.excludedCreatureNames = normalizeCreatureNameList(config.excludedCreatureNames);
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -2781,6 +2787,64 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     }
 
     return normalized;
+  }
+
+  function normalizeCreatureName(name) {
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function normalizeCreatureNameList(list) {
+    if (!Array.isArray(list)) {
+      return [];
+    }
+
+    const seen = new Set();
+    const normalized = [];
+    list.forEach((name) => {
+      const cleaned = String(name || "").trim();
+      if (!cleaned) {
+        return;
+      }
+
+      const key = cleaned.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+
+      seen.add(key);
+      normalized.push(cleaned);
+    });
+
+    return normalized;
+  }
+
+  function normalizeTargetFilterMode(value) {
+    return value === "include" || value === "exclude" ? value : "all";
+  }
+
+  function shouldTargetCreature(target) {
+    if (!target) {
+      return false;
+    }
+
+    const mode = normalizeTargetFilterMode(config.targetFilterMode);
+    const targetName = normalizeCreatureName(target.name || "Mob");
+    const includedNames = new Set((config.includedCreatureNames || []).map(normalizeCreatureName));
+    const excludedNames = new Set((config.excludedCreatureNames || []).map(normalizeCreatureName));
+
+    if (mode === "include") {
+      if (!includedNames.size) {
+        return true;
+      }
+
+      return includedNames.has(targetName) && !excludedNames.has(targetName);
+    }
+
+    if (mode === "exclude") {
+      return !excludedNames.has(targetName);
+    }
+
+    return true;
   }
 
   function getNearbyMonsters() {
@@ -3046,6 +3110,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
 
     const playerPosition = normalizePosition(bot.getPlayerPosition());
     return getNearbyMonsters()
+      .filter((monster) => shouldTargetCreature(monster))
       .filter((monster) => !isTargetSkipped(monster, now))
       .sort((left, right) => {
         const leftDistance = getTileDistance(playerPosition, normalizePosition(left?.getPosition?.() || left?.__position));
@@ -3247,7 +3312,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       return getMonsterCandidates(now).length > 0 && !getCurrentTarget();
     }
 
-    return getNearbyMonsters().length > 0;
+    return getMonsterCandidates(now).length > 0;
   }
 
   function triggerAttack(now = Date.now()) {
@@ -3327,6 +3392,12 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     }
 
     const now = Date.now();
+    const engagedTarget = getEngagedTarget();
+    if (engagedTarget && !shouldTargetCreature(engagedTarget)) {
+      skipTarget(engagedTarget, "target does not match configured filters", now, 2000);
+      return true;
+    }
+
     if (resetTargetIfTooFar()) {
       return true;
     }
@@ -3450,6 +3521,18 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
 
     if (Object.prototype.hasOwnProperty.call(nextConfig, "maxTargetDistance")) {
       nextConfig.maxTargetDistance = Math.max(1, Math.trunc(Number(nextConfig.maxTargetDistance) || config.maxTargetDistance || 8));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "targetFilterMode")) {
+      nextConfig.targetFilterMode = normalizeTargetFilterMode(nextConfig.targetFilterMode);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "includedCreatureNames")) {
+      nextConfig.includedCreatureNames = normalizeCreatureNameList(nextConfig.includedCreatureNames);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "excludedCreatureNames")) {
+      nextConfig.excludedCreatureNames = normalizeCreatureNameList(nextConfig.excludedCreatureNames);
     }
 
     Object.assign(config, nextConfig);
@@ -6709,6 +6792,62 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoAttackToggle.checked = !!bot.attack?.status?.().running;
   }
 
+  function refreshAutoAttackFilterControls() {
+    const modeSelect = document.getElementById("minibia-bot-auto-attack-filter-mode");
+    const includeList = document.getElementById("minibia-bot-auto-attack-include-list");
+    const excludeList = document.getElementById("minibia-bot-auto-attack-exclude-list");
+    const config = bot.attack?.config || {};
+    const includedNames = Array.isArray(config.includedCreatureNames) ? config.includedCreatureNames : [];
+    const excludedNames = Array.isArray(config.excludedCreatureNames) ? config.excludedCreatureNames : [];
+    const mode = config.targetFilterMode === "include" || config.targetFilterMode === "exclude"
+      ? config.targetFilterMode
+      : "all";
+
+    if (modeSelect) {
+      modeSelect.value = mode;
+    }
+
+    const renderNameList = (container, names, key) => {
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = "";
+      if (!names.length) {
+        const empty = document.createElement("div");
+        empty.className = "mb-small-note";
+        empty.textContent = "No names added.";
+        container.appendChild(empty);
+        return;
+      }
+
+      names.forEach((name, index) => {
+        const row = document.createElement("div");
+        row.className = "mb-list-row";
+
+        const label = document.createElement("span");
+        label.textContent = name;
+
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "mb-small-button";
+        removeButton.textContent = "Remove";
+        removeButton.addEventListener("click", () => {
+          const nextNames = names.filter((_, currentIndex) => currentIndex !== index);
+          bot.attack.updateConfig({ [key]: nextNames });
+          refreshAutoAttackFilterControls();
+        });
+
+        row.appendChild(label);
+        row.appendChild(removeButton);
+        container.appendChild(row);
+      });
+    };
+
+    renderNameList(includeList, includedNames, "includedCreatureNames");
+    renderNameList(excludeList, excludedNames, "excludedCreatureNames");
+  }
+
   function refreshCaveStatus() {
     const statusLabel = document.getElementById("minibia-bot-cave-status");
     const startButton = document.getElementById("minibia-bot-cave-start");
@@ -7587,6 +7726,23 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <span class="mb-field-label">Rune Hotkey (1-12)</span>
                 <input type="number" id="minibia-bot-auto-attack-rune-hotkey" min="1" max="12" placeholder="4" />
               </label>
+              <label class="mb-field" for="minibia-bot-auto-attack-filter-mode">
+                <span class="mb-field-label">Target Filter</span>
+                <select id="minibia-bot-auto-attack-filter-mode">
+                  <option value="all">All monsters</option>
+                  <option value="include">Only include list</option>
+                  <option value="exclude">Exclude list</option>
+                </select>
+              </label>
+              <div class="mb-inline">
+                <input type="text" id="minibia-bot-auto-attack-filter-name" placeholder="Creature name" />
+                <button type="button" class="mb-small-button" id="minibia-bot-auto-attack-include-add">Include</button>
+              </div>
+              <button type="button" class="mb-small-button" id="minibia-bot-auto-attack-exclude-add">Exclude</button>
+              <div class="mb-small-note">Include list (used when Target Filter is "Only include list")</div>
+              <div class="mb-list" id="minibia-bot-auto-attack-include-list"></div>
+              <div class="mb-small-note">Exclude list (used when Target Filter is "Exclude list")</div>
+              <div class="mb-list" id="minibia-bot-auto-attack-exclude-list"></div>
               <div class="mb-small-note">Melee mode uses the target hotkey, then walks adjacent to the target. Non-melee mode uses the target hotkey to acquire a target and the rune hotkey to cast on that target.</div>
             </div>
           </div>
@@ -7632,6 +7788,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const autoAttackMeleeInput = panel.querySelector("#minibia-bot-auto-attack-melee");
     const autoAttackHotkeyInput = panel.querySelector("#minibia-bot-auto-attack-hotkey");
     const autoAttackRuneHotkeyInput = panel.querySelector("#minibia-bot-auto-attack-rune-hotkey");
+    const autoAttackFilterModeInput = panel.querySelector("#minibia-bot-auto-attack-filter-mode");
+    const autoAttackFilterNameInput = panel.querySelector("#minibia-bot-auto-attack-filter-name");
+    const autoAttackIncludeAddButton = panel.querySelector("#minibia-bot-auto-attack-include-add");
+    const autoAttackExcludeAddButton = panel.querySelector("#minibia-bot-auto-attack-exclude-add");
     const talkEnabledInput = panel.querySelector("#minibia-bot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-bot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-bot-talk-prompt");
@@ -8028,6 +8188,64 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
+    function addNameToAutoAttackList(listKey) {
+      const rawName = autoAttackFilterNameInput?.value?.trim() || "";
+      if (!rawName) {
+        return;
+      }
+
+      const config = bot.attack?.config || {};
+      const currentList = Array.isArray(config[listKey]) ? config[listKey] : [];
+      const exists = currentList.some(
+        (name) => String(name).trim().toLowerCase() === rawName.toLowerCase()
+      );
+
+      if (!exists) {
+        bot.attack.updateConfig({ [listKey]: [...currentList, rawName] });
+      }
+
+      if (autoAttackFilterNameInput) {
+        autoAttackFilterNameInput.value = "";
+      }
+
+      refreshAutoAttackFilterControls();
+    }
+
+    if (autoAttackFilterModeInput) {
+      autoAttackFilterModeInput.value = bot.attack?.config?.targetFilterMode || "all";
+      autoAttackFilterModeInput.addEventListener("change", () => {
+        const mode = autoAttackFilterModeInput.value;
+        bot.attack.updateConfig({ targetFilterMode: mode });
+        refreshAutoAttackFilterControls();
+      });
+    }
+
+    if (autoAttackIncludeAddButton) {
+      autoAttackIncludeAddButton.addEventListener("click", () => {
+        addNameToAutoAttackList("includedCreatureNames");
+      });
+    }
+
+    if (autoAttackExcludeAddButton) {
+      autoAttackExcludeAddButton.addEventListener("click", () => {
+        addNameToAutoAttackList("excludedCreatureNames");
+      });
+    }
+
+    if (autoAttackFilterNameInput) {
+      autoAttackFilterNameInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") {
+          return;
+        }
+
+        event.preventDefault();
+        const mode = autoAttackFilterModeInput?.value === "exclude"
+          ? "excludedCreatureNames"
+          : "includedCreatureNames";
+        addNameToAutoAttackList(mode);
+      });
+    }
+
     if (autoAttackEnabledInput) {
       autoAttackEnabledInput.checked = !!bot.attack?.status?.().running;
       autoAttackEnabledInput.addEventListener("change", () => {
@@ -8146,6 +8364,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoInvisibleStatus();
     refreshAutoMagicShieldStatus();
     refreshAutoAttackStatus();
+    refreshAutoAttackFilterControls();
     refreshAutoEatStatus();
     refreshCaveStatus();
     refreshCaveModeStatus();
@@ -8155,6 +8374,11 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshCavePresetControls();
     refreshCaveClosestStatus();
     refreshCaveTransitionStatus();
+
+    const autoAttackFilterTimerId = window.setInterval(refreshAutoAttackFilterControls, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(autoAttackFilterTimerId);
+    });
 
     const visibleCreaturesTimerId = window.setInterval(refreshVisibleCreatures, 1000);
     bot.addCleanup(() => {
@@ -8190,6 +8414,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoInvisibleStatus,
     refreshAutoMagicShieldStatus,
     refreshAutoAttackStatus,
+    refreshAutoAttackFilterControls,
     refreshAutoEatStatus,
     refreshCaveStatus,
     refreshCaveModeStatus,
